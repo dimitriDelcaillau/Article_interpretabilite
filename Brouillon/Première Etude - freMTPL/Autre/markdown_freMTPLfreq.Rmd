@@ -1,0 +1,421 @@
+---
+title: "Modélisation fréquence - MTLfreq"
+author: "Dimitri Delcaillau"
+date: "30 juillet 2019"
+output: html_document
+---
+
+# Chargement des packages et des données
+
+```{r warning=FALSE}
+#### Chargement des données et des packages ####
+
+#Packages
+Packages = c("CASdatasets", "dplyr", "ggplot2", "gridExtra", "cartography", "RColorBrewer", "reshape2", "forcats", "rpart", "rpart.plot", "Hmisc")
+a=lapply(Packages, library, character.only = TRUE)
+
+# Données
+data("freMTPLfreq")
+str(freMTPLfreq)
+freq=freMTPLfreq
+#Variables explicatives
+var_freq = c("Power", "CarAge", "DriverAge" ,"Brand", "Gas", "Region","Density" )
+brands=levels(freq$Brand)
+letters=c("D","F","E","C","G","A","B")
+levels(freq$Brand)=letters
+```
+Dans cette partie, on réalise une analyse des données de sinistres de responsabilité civile que l'on a à notre disposition.
+Dans la base de données freMTPLfreq, les variables explicatives de risque sont collectées pour 413 169 polices responsabilité civile moteur (observées sur une année). De plus, nous avons les numéros de sinistres par police ainsi que les montants de sinistres correspondants. freMTPLfreq contient les variables explicatives (âge,puissance...) et le nombre de sinistres.
+ Les variables à notre disposition, dans la base de données de fréquence sont:  
+- PolicyID : le numéro de police (pas explicative, sert à relier les deux bases de données)  
+ 
+- ClaimNB : le nombre de sinistres (ici entre 0 et 4)  
+ 
+- Exposure : l'exposition (en fraction d'années)  
+ 
+- Power : la puissance de la voiture (variable catégorielle ordonnée de "d" à "o")  
+ 
+- CarAge : l'âge du véhicule (en années)  
+ 
+- DriverAge : l'âge du conducteur (en années)
+ 
+- Brand : la marque de la voiture, divisée en plusieurs groupes : 
+   
+ A- Renaut Nissan and Citroen,     
+ B- Volkswagen, Audi, Skoda and Seat  
+ C- Opel, General Motors and Ford   
+ D- Fiat  
+ E- Mercedes Chrysler and BMW  
+ F- Japanese (except Nissan) and Korean  
+ G- other  
+ 
+ - Gas : Gaz de la voiture : "Diesel" ou "Regular"   
+ 
+ - Region : la région (en France) des polices, selon les standards français de classification 
+ 
+- Density : nombre d'habitants par $km^2$ dans la ville où conduit le conducteur
+
+# Analyse préliminaire : description des données 
+```{r warning=F}
+# Réparition des sinistres
+freq%>%group_by(ClaimNb)%>%dplyr::summarise(NbPolices = n(), Proportion = n()/nrow(freq), TotalExposition = sum(Exposure))
+# Fréquence moyenne de sinistres : envrion 7%
+sum(freq$ClaimNb)/sum(freq$Exposure)
+```
+On remarque que la majorité des assurés n'ont pas eu de sinistres (plus de 96%). Ensuite, lorsque les assurés ont été sinistrés, ils ont eu au maximum sur la période d'exposition. On remarque que seulement 3 assurés ont eu 4 sinistres, avec une exposition totale de ces assurés inférieure à 1 an. Cela vient sûrement de voitures en location sur des courtes durées.
+
+```{r warning=F}
+# Analyse exposition et fréquences de sinistres
+g1=ggplot(data.frame(x=freq$Exposure), aes(x=x))+geom_histogram(bins=20)+xlab("Exposition")+ylab("Nombre de polices")+ggtitle("Histogramme Exposure")
+g2=ggplot(data.frame(x=freq$Exposure), aes(y=x))+geom_boxplot()+ggtitle("Boxplot Exposure")
+g3 = ggplot(data.frame(x=freq$ClaimNb), aes(x=x))+geom_histogram(bins=20)+xlab("ClaimNb")+ylab("Nombre de polices")+ggtitle("Histogramme ClaimNb")
+grid.arrange(g1,g2,g3,ncol=3)
+
+# Fonction renvoyant deux graphiques :
+# - l'exposition totale par modalité de la variable choisie
+# - fréquence de sinistres par modalité de la variable choisie
+# On peut ajouter un paramètre de limite en abscisse pour plus de lisibilité des graphiques
+hist_func = function(dat = freq2, mod = "Power", xlim = NULL){
+  temp = dat%>%group_by_(mod)%>%dplyr::summarise(Expo = sum(Exposure), frequency = sum(ClaimNb)/sum(Exposure))
+  temp2 = temp$Expo; names(temp2) = temp[,1]
+  g1 = ggplot(temp, aes_string(x=mod, y = "Expo"))+geom_col()+ggtitle(paste("Exposition par",mod))
+  # barplot(temp2, xlab =mod, ylab = "Exposition")
+  g2 = ggplot(temp,aes_string(x=mod,y="frequency", group=1))+geom_point()+geom_line()+geom_smooth()+ylim(c(0,0.35))+
+    ggtitle(paste("Fréquence par", mod))
+  if (is.null(xlim)){
+    grid.arrange(g1,g2,ncol=2)  
+  }
+  else{
+    grid.arrange(g1+xlim(xlim),g2+xlim(xlim),ncol=2)  
+  }
+}
+# Region
+suppressMessages(suppressWarnings( hist_func(freq, "Region")))
+# Power
+suppressMessages(suppressWarnings( hist_func(freq, "Power")))
+# CarAge (restreint à [0, 25])
+suppressMessages(suppressWarnings( hist_func(freq, "CarAge",c(0,25))))
+# DriverAge (restreint à [18,90])
+suppressMessages(suppressWarnings( hist_func(freq, "DriverAge",c(18,90))))
+# Brand
+suppressMessages(suppressWarnings( hist_func(freq, "Brand")))
+# Density (on utilise la partie entière du log) : on observe une croissance
+freq_bis = freq
+freq_bis$Density = round(log(freq$Density))
+suppressMessages(suppressWarnings( hist_func(freq_bis, "Density")))
+
+# Analyse Régions plus approfondie
+
+dat = freq%>%group_by(Region)%>%dplyr::summarise(Expo = sum(Exposure), frequency = sum(ClaimNb)/sum(Exposure))
+dat$id = c("FR10","FR23","FR24","FR25","FR30","FR51","FR52","FR53","FR61","FR63")
+# id français des régions
+df = NULL
+df$id = nuts2.df$id[111:132]
+df=data.frame(df)
+df$val = 0
+df$val[df$id%in%dat$id] = dat$frequency
+df$val[!df$id%in%dat$id] = NA
+# Cartographie
+df$val=df$val*100
+choroLayer(spdf = nuts2.spdf, df = df, var = 'val',
+           breaks=dat$frequency[order(dat$frequency)]*100,
+           col = viridis::inferno(11)[11:1])
+title("Proportion de sinistres par région (en %)")
+```
+
+
+## Corrélation 
+On calcule les corrélations pour les variables numériques en se basant sur les méthodes de Sperman et Pearson.
+```{r warning=F}
+# Corrélation entre les variables numériques : on suppose Power numérique (ordonnée), et Density -> log Density
+freq_2 = freq
+#Conversion lettre en chiffres
+letter2num <- function(x) {utf8ToInt(x) - utf8ToInt("a") + 1L}
+freq_2$Power = unlist(lapply(as.character(freq$Power), letter2num))-3
+var_freq_num = c("Power", "CarAge", "DriverAge", "Density")
+mat_corr1 = cor(freq_2[,var_freq_num], method="pearson")
+mat_corr2 = cor(freq_2[,var_freq_num], method="spearman")
+diag(mat_corr1)=diag(mat_corr2)=0
+
+#Fonction pour afficher matrice de corrélation avec des couleurs
+mat_correlation_plot = function(mat_corr = mat_corr){
+  # Input :
+  #        mat_corr : matrice de corrélation
+  #        [matrix]
+  # Output : graphique de la matrice de corrélation avec nuance de couleurs
+  # [plot]
+  neworder=hclust(dist(mat_corr))$order
+  res2=mat_corr[neworder,neworder]
+  
+  # Matrice de corrélation avec nuance de couleurs
+  return(qplot(x=Var1, y=Var2, data=melt(res2), fill=value, geom="tile") +
+           scale_fill_gradient2(low="red",high="blue",limits=c(-1, 1)) +
+           theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+           xlab(NULL)+ylab(NULL)+labs(fill="V de Cramer"))
+}
+mat_correlation_plot(mat_corr1)
+mat_correlation_plot(mat_corr2)
+```
+```{r warning=FALSE}
+# Retraitement ------------
+temp = freq%>%group_by(Brand)%>%dplyr::summarise(Expo = sum(Exposure), frequency = sum(ClaimNb)/sum(Exposure))
+temp = temp%>%mutate(Brand= fct_reorder(Brand, frequency))
+g2 = ggplot(temp,aes(x=Brand,y=frequency, group=1))+geom_point()+geom_line()+geom_smooth()+ylim(c(0,0.35))+
+  ggtitle(paste("Fréquence par", "Brand"))
+temp2 = temp$Expo; names(temp2) = temp[,1]
+g1 = ggplot(temp, aes(x=Brand, y = Expo))+geom_col()+ggtitle(paste("Exposition par","Brand"))
+grid.arrange(g1,g2)
+
+temp = freq%>%group_by(Region)%>%dplyr::summarise(Expo = sum(Exposure), frequency = sum(ClaimNb)/sum(Exposure))
+temp = temp%>%mutate(Region= fct_reorder(Region, frequency))
+g2 = ggplot(temp,aes(x=Region,y=frequency, group=1))+geom_point()+geom_line()+geom_smooth()+ylim(c(0,0.35))+
+  ggtitle(paste("Fréquence par", "Region"))
+temp2 = temp$Expo; names(temp2) = temp[,1]
+g1 = ggplot(temp, aes(x=Region, y = Expo))+geom_col()+ggtitle(paste("Exposition par","Region"))
+grid.arrange(g1,g2)
+```
+
+## Retraitement de la base pour le modèle GLM: 
+Pour mettre en place le modèle GLM, étant donnée la monotonie imposée par sa structure, les variables numériques se doivent d'être retraitées et catégorisée. Seule la variable "Density" a été gardée numérique car nous avons remarqué dans l'analyse préliminaire que son influence sur la variable de fréquence était croissante.
+
+```{r warning=FALSE}
+# Power séparé en 3 groupes : 1="d"; 2 = "e-h"; 3 = "i-o"
+# Density : gardée numérique (car croissance de la réponse) : log(Density)
+# Gas : inchangée
+# CarAge en 3 groupes : 1 : "0-8", "9-12", "13+"
+# DriverAge : "18-20", "21-26", "27-33" , "34-42", "43-51", "52-69", "70+"
+# Brand : 1: "A et F" 2: "B,C,D,E,G"
+# region : 1: "R24 - R53-R25" , 2: "R23-R54-R52-R72", 3 : "R31-R74-R11"
+retraitement_base_freq = function(data = data){
+  # Input:
+  #       data : base de données initiale que l'on va retraiter
+  #       [data.frame]
+  #Output : base de données retraitées
+  #         [data.frame]
+  
+  # POWER :
+  data_2 = data
+  data_2$Power = unlist(lapply(as.character(freq$Power), letter2num))-3
+  data_2$Power[data_2$Power==1] = "1"
+  data_2$Power[data_2$Power<6 & data_2$Power>1] = "2"
+  data_2$Power[data_2$Power>=6] = "3"
+  data_2$Power = factor(data_2$Power)
+  
+  # CarAge
+  data_2$CarAge[data$CarAge<9] = "0-8"
+  data_2$CarAge[data$CarAge>=9 & data_2$CarAge<13] = "9-12"
+  data_2$CarAge[data$CarAge>=13] = "13+"
+  data_2$CarAge = factor(data_2$CarAge)
+  # DriverAge
+  data_2$DriverAge[data$DriverAge<21] = "18-20"
+  data_2$DriverAge[data$DriverAge>=21 & data_2$DriverAge<27] = "21-26"
+  data_2$DriverAge[data$DriverAge>=27 & data_2$DriverAge<34] = "27-33"
+  data_2$DriverAge[data$DriverAge>=34 & data_2$DriverAge<43] = "34-42"
+  data_2$DriverAge[data$DriverAge>=43 & data_2$DriverAge<52] = "43-51"
+  data_2$DriverAge[data$DriverAge>=52 & data_2$DriverAge<70] = "52-69"
+  data_2$DriverAge[data$DriverAge>=70] = "70+"
+  data_2$DriverAge = factor(data_2$DriverAge)
+  # Brand 1: "A et F" 2: "B,C,D,E,G"
+  data_2$Brand = as.character(data_2$Brand)
+  data_2$Brand[data_2$Brand=="A" | data_2$Brand=="F" ] = "1"
+  data_2$Brand[data_2$Brand!="1"] = "2"
+  data_2$Brand = factor(data_2$Brand)
+  # Region : 1: "R24 - R53-R25" , 2: "R23-R54-R52-R72", 3 : "R31-R74-R11"
+  data_2$Region = as.character(data_2$Region)
+  data_2$Region[data_2$Region=="R24"| data_2$Region=="R53" | data_2$Region=="R25"] = "R1"
+  data_2$Region[data_2$Region=="R23"| data_2$Region=="R54" | data_2$Region=="R52" | data_2$Region=="72"] = "R2"
+  data_2$Region[data_2$Region!="R1" & data_2$Region!="R2"] = "R3"
+  data_2$Region = factor(data_2$Region)
+  #Density 
+  data_2$Density = log(data_2$Density)
+  return(data_2)
+}
+# Base retraitée
+freq_r = retraitement_base_freq(freq)
+str(freq_r)
+```
+
+## Définition de la fonction Objective : Déviance de Poisson 
+```{r warning=FALSE}
+Poisson.Deviance = function(pred, obs){
+  2*(sum(pred)-sum(obs)+sum(log((obs/pred)^(obs))))/length(pred)
+}
+```
+```{r warning=F}
+# Base d'apprentissage et de test ----------------------
+n=nrow(freq_r)
+n_app=floor(90/100*n) 
+set.seed(2016)
+A=sample(1:n,n_app)
+app = freq_r[A,]
+test = freq_r[-A,]
+# app et test sont retraitées
+# app2 et test2 ne sont pas retraitées
+app2 = freq[A,]
+test2 = freq[-A,]
+# Analyse Ba et Bt
+app%>%group_by(ClaimNb)%>%summarise(prop = n()/nrow(app))
+test%>%group_by(ClaimNb)%>%summarise(prop = n()/nrow(test))
+# fréquence empirique test et app : léger biais (6.97% contre 7.07%)
+sum(app$ClaimNb)/sum(app$Exposure)
+sum(test$ClaimNb)/sum(test$Exposure)
+```
+
+## Mise en place du modèle GLM 
+```{r warning=FALSE}
+# Modèle GLM ---------
+#Modèle 1 : complet
+glm_freq_1 = glm(ClaimNb~Power+CarAge+DriverAge+Brand+Gas+Region+Density,
+                 data=app,family=poisson(), offset = log(Exposure))
+summary(glm_freq_1)
+# toutes les variables sont significatives : pas de meilleur modèle possible
+
+# résultat modèle
+app$fit_glm = fitted(glm_freq_1)
+test$fit_glm = predict(glm_freq_1, newdata=test, type="response")
+
+# in-sample and out-of-sample losses (in 10^(-2))
+in1=(insampleGLM <- 100*Poisson.Deviance(app$fit_glm, app$ClaimNb))
+out1=100*Poisson.Deviance(test$fit_glm, test$ClaimNb)
+mse_in1 = Metrics::mse(app$fit_glm, app$ClaimNb)
+mse_out1 = Metrics::mse(test$fit_glm, test$ClaimNb)
+mae_in1 = Metrics::mae(app$fit_glm, app$ClaimNb)
+mae_out1 = Metrics::mae(test$fit_glm, test$ClaimNb)
+
+res_glm_1 = c(glm_freq_1$aic, in1, out1, mse_in1, mse_out1, mae_in1, mae_out1)
+names(res_glm_1) = c("AIC", "Deviance app", "Deviance test", "MSE app", "MSE test", "MAE app", "MAE test")
+# Autre GLM : En retirant Region
+glm_freq_2 = glm(ClaimNb~Power+CarAge+DriverAge+Brand+Gas+Density,
+                 data=app,family=poisson(), offset = log(Exposure))
+summary(glm_freq_2)
+# résultat modèle
+
+app$fit_glm2 = fitted(glm_freq_2)
+test$fit_glm2 = predict(glm_freq_2, newdata=test, type="response")
+
+# in-sample and out-of-sample losses (in 10^(-2))
+in2=(insampleGLM <- 100*Poisson.Deviance(app$fit_glm2, app$ClaimNb))
+out2=100*Poisson.Deviance(test$fit_glm2, test$ClaimNb)
+mse_in2 = Metrics::mse(app$fit_glm2, app$ClaimNb)
+mse_out2 = Metrics::mse(test$fit_glm2, test$ClaimNb)
+mae_in2= Metrics::mae(app$fit_glm2, app$ClaimNb)
+mae_out2 = Metrics::mae(test$fit_glm2, test$ClaimNb)
+
+res_glm_2 = c(glm_freq_2$aic, in2, out2,  mse_in2, mse_out2, mae_in2, mae_out2)
+names(res_glm_2) = c("AIC", "Deviance app", "Deviance test", "MSE app", "MSE test", "MAE app", "MAE test")
+res1_2 = rbind(res_glm_1,res_glm_2)
+rownames(res1_2) =c("GLM1", "GLM2(sans Region)")
+res1_2
+```
+
+## Arbres de décision
+
+Après avoir implémenté le "meilleur" GLM, nous mettons en place un modèle d'arbre de décision.
+Nous commençons par un premier arbre avec des paramètres choisis plus ou moins aléatoirement et nous comparons les résultats en terme de déviance de Poisson, MSE etc. Notons que nous n'avons pas besoin de prendre les données retraitées pour l'abre de décision car aucune monotonie n'est imposée, contrairement au GLM.
+Nous observons finalement que le 'meilleur' arbre de décision que l'on obtient à l'aide de validation croisée ne "surperforme" pas le GLM précédent.
+Nous allons mettre en place d'autres modèles pour essayer d'améliorer les performances.
+
+```{r warning=FALSE}
+# Arbre de décision
+# Paramètres choisis (cf article )
+app2 = freq[A, ]
+test2 = freq[-A,]
+tree1 <- rpart(cbind(Exposure,ClaimNb) ~ Power+CarAge+DriverAge+Brand+Gas+Region+Density, 
+               app2, method="poisson",
+               control=rpart.control(xval=1, minbucket=10000, cp=0.00001))     
+
+# rpart.plot(tree1)        # plot tree
+# tree1                    # show tree with all binary splits
+# printcp(tree1)           # cost-complexit statistics
+
+app2$fit_tree = predict(tree1)*app2$Exposure
+test2$fit_tree = predict(tree1, newdata=test2)*test2$Exposure
+in_tree1 = 100*Poisson.Deviance(app2$fit_tree, app2$ClaimNb)
+out_tree1 = 100*Poisson.Deviance(test2$fit_tree, test2$ClaimNb)
+mse_in_tree1 = Metrics::mse(app2$fit_tree, app2$ClaimNb)
+mse_out_tree1 = Metrics::mse(test2$fit_tree, test2$ClaimNb)
+mae_in_tree1= Metrics::mae(app2$fit_tree, app2$ClaimNb)
+mae_out_tree1 = Metrics::mae(test2$fit_tree, test2$ClaimNb)
+vec1 = c(in_tree1, out_tree1, mse_in_tree1, mse_out_tree1, mae_in_tree1, mae_out_tree1)
+
+#Cross-validation and élagage de l'arbre
+K <- 10                 # K-fold cross-validation value
+set.seed(2019)
+xgroup <- rep(1:K, length = nrow(app2))
+xfit <- xpred.rpart(tree1, xgroup)
+(n_subtrees <- dim(tree1$cptable)[1])
+std1 <- numeric(n_subtrees)
+err1 <- numeric(n_subtrees)
+err_group <- numeric(K)
+for (i in 1:n_subtrees){
+  for (k in 1:K){
+    ind_group <- which(xgroup ==k)  
+    err_group[k] <- Poisson.Deviance(app2[ind_group,"Exposure"]*xfit[ind_group,i],app2[ind_group,"ClaimNb"])
+  }
+  err1[i] <- mean(err_group)             
+  std1[i] <- sd(err_group)
+}
+
+x1 <- log10(tree1$cptable[,1])
+xmain <- "cross-validation error plot"
+xlabel <- "cost-complexity parameter (log-scale)"
+ylabel <- "CV error (in 10^(-2))"
+errbar(x=x1, y=err1*100, yplus=(err1+std1)*100, yminus=(err1-std1)*100, xlim=rev(range(x1)), col="blue", main=xmain, ylab=ylabel, xlab=xlabel)
+lines(x=x1, y=err1*100, col="blue")
+abline(h=c(min(err1+std1)*100), lty=1, col="orange")
+abline(h=c(min(err1)*100), lty=1, col="magenta")
+abline(h=c(in1), col="green", lty=2)
+legend(x="topright", col=c("blue", "orange", "magenta", "green"), lty=c(1,1,1,2), lwd=c(1,1,1,1), pch=c(19,-1,-1,-1), legend=c("tree1", "1-SD rule", "min.CV rule", "Model GLM1"))
+
+# prune to appropriate cp constant
+printcp(tree1)
+tree2 <- prune(tree1, cp=0.00003)
+printcp(tree2)
+
+app2$fit_tree2<- predict(tree2)*app2$Exposure
+test2$fit_tree2 <- predict(tree2, newdata=test2)*test2$Exposure
+100*Poisson.Deviance(app2$fit_tree2, app2$ClaimNb)
+100*Poisson.Deviance(test2$fit_tree2, test2$ClaimNb)
+in_tree2 = 100*Poisson.Deviance(app2$fit_tree2, app2$ClaimNb)
+out_tree2 = 100*Poisson.Deviance(test2$fit_tree2, test2$ClaimNb)
+mse_in_tree2 = Metrics::mse(app2$fit_tree2, app2$ClaimNb)
+mse_out_tree2 = Metrics::mse(test2$fit_tree2, test2$ClaimNb)
+mae_in_tree2 = Metrics::mae(app2$fit_tree2, app2$ClaimNb)
+mae_out_tree2 = Metrics::mae(test2$fit_tree2, test2$ClaimNb)
+vec2 = c(in_tree2, out_tree2, mse_in_tree2, mse_out_tree2, mae_in_tree2, mae_out_tree2)
+
+```
+
+
+
+## Mise en place d'un XGBoost
+```{r warning=FALSE}
+# Paramètres à optimiser via CV
+caret_xgb_param_freq_1 <- expand.grid(nrounds = 150, eta = 0.1, max_depth = 4,
+                                      gamma = 0.5, colsample_bytree = 1, min_child_weight = 1, subsample = 0.5)
+set.seed(2019)
+xgb_freq_1 = caret::train(ClaimNb/Exposure ~ Power+CarAge+DriverAge+Brand+Gas+Region+Density, data = app2, method = "xgbTree",
+              tuneGrid = caret_xgb_param_freq_1, weights= app2$Exposure,
+             verbose=F, trControl = caret::trainControl(method="none") ,objective = "count:poisson")
+app2$fit_xgb = predict(xgb_freq_1, app2)*app2$Exposure
+test2$fit_xgb = predict(xgb_freq_1, test2)*test2$Exposure
+in1_xgb = 100*Poisson.Deviance(app2$fit_xgb, app2$ClaimNb)
+out1_xgb = 100*Poisson.Deviance(test2$fit_xgb, test2$ClaimNb)
+
+in_xgb1 = 100*Poisson.Deviance(app2$fit_xgb, app2$ClaimNb)
+out_xgb1 = 100*Poisson.Deviance(test2$fit_xgb, test2$ClaimNb)
+mse_in_xgb1 = Metrics::mse(app2$fit_xgb, app2$ClaimNb)
+mse_out_xgb1 = Metrics::mse(test2$fit_xgb, test2$ClaimNb)
+mae_in_xgb1= Metrics::mae(app2$fit_xgb, app2$ClaimNb)
+mae_out_xgb1 = Metrics::mae(test2$fit_xgb, test2$ClaimNb)
+vec_xgb1 = c(in_xgb1, out_xgb1, mse_in_xgb1, mse_out_xgb1, mae_in_xgb1, mae_out_xgb1)
+
+```
+
+## Résumé de tous les modèles
+```{r warning =FALSE}
+vec1 = c(in_tree1, out_tree1, mse_in_tree1, mse_out_tree1, mae_in_tree1, mae_out_tree1)
+res = rbind(res1_2[,-1], vec1, vec2, vec_xgb1)
+rownames(res)=c("GLM1", "GLM2", "Tree1", "Tree2", "XGBoost")
+res
+```
