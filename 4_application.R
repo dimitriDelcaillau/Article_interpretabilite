@@ -19,7 +19,7 @@
 wd = "C:\\Users\\dimitri.delcaillau\\Desktop\\Dimitri Delcaillau\\Article_Interprétabilite\\Code\\"
 source(paste(wd, "1_retraitement_analyse_preliminaire.R", sep =""))
 source(paste(wd, "2_ajustement_modeles_freq_cout.R", sep =""))
-# source(paste(wd, "3_interprétation_modeles.R", sep =""))
+source(paste(wd, "3_interprétation_modeles.R", sep =""))
 
 # Import des packages
 Packages = c("CASdatasets", "dplyr", "data.table", "ggplot2","gridExtra", "stringr","MASS","Metrics", "RColorBrewer",
@@ -232,7 +232,7 @@ res_xgb_cat = func_resume_modele(app$fit_xgb_cat, app$ClaimNb, test$fit_xgb_cat,
 rbind(res_glm_num,res_glm_cat, res_tree_num, res_tree_cat, res_xgb_num, res_xgb_cat)
 # Valeurs relatives au GLM catégoriel (en %)
 temp = do.call(rbind,lapply(1:6,function(a){return(res_glm_cat)}))
--(rbind(res_glm_num,res_glm_cat, res_tree_num, res_tree_cat, res_xgb_num, res_xgb_cat)-temp)/temp*100
+(rbind(res_glm_num,res_glm_cat, res_tree_num, res_tree_cat, res_xgb_num, res_xgb_cat)-temp)/temp*100
 
 
 ############################################################################################
@@ -261,10 +261,11 @@ func_imp_var_caret_plot = function(model, nb_vars = NULL){
   data.frame(vars = rownames(a), Overall = a)%>%head(nb_vars)%>%
     mutate(vars = fct_reorder(vars,Overall))%>%
     ggplot(aes(x = vars, y = Overall))+
-    geom_col(fill = "cornflowerblue")+coord_flip()
+    geom_col(fill = "cornflowerblue", col='black')+coord_flip()
 }
 # Pour le GLM ==> caret utilise la t-stat
 g1 = func_imp_var_caret_plot(glm_freq_num,10)
+g1
 g2 = func_imp_var_caret_plot(glm_freq_cat,10)
 g3 = func_imp_var_caret_plot(xgb_freq_num,10)
 g4 = func_imp_var_caret_plot(xgb_freq_cat,10)
@@ -273,6 +274,13 @@ grid.arrange(g1+ggtitle("GLM num"),g2+ggtitle("GLM cat"),g3+ggtitle("XGB num"),g
 
 # b) Avec vip  ------
 # i) GLM
+variables=paste(paste(var_freq,"GLM",sep=""),collapse="+")    
+formule=as.formula(paste("ClaimNb","~",variables))
+glm_freq_cat_caret = caret::train(formule, data = app, method="glm", family=poisson, weights = app$Exposure,
+                                  trControl = caret::trainControl(method="none"))
+
+imp_glm_cat = (vi(glm_freq_cat_caret))
+g5 = vip(imp_glm_cat)
 # !!!! à faire : le glm doit être fait avec caret ... !!!
 # ii) XGB
 imp_xgb_cat = (vi(xgb_freq_cat))
@@ -366,25 +374,23 @@ func_pdp_plot_cat(xgb_freq_cat, "RegionGLM", app, 10000,)
 func_pdp_plot_cat_ordered(xgb_freq_cat, "CarAgeGLM", app, 10000,)
 func_pdp_plot_cat_ordered(xgb_freq_cat, "DriverAgeGLM", app, 10000,)
 
-# ICE
-func_ice = function(model, variable, base_app, n_sample = nrow(base_app), seed = 2019){
-  set.seed(seed)
-  app_sample = base_app[sample(1:nrow(base_app),n_sample),]
-  model %>% partial(pred.var = variable, train  = app_sample, 
-                    pred.fun = function(object, newdata){predict(object,newdata)*newdata$Exposure}) 
-}
-# ex
-func_ice(xgb_freq_num, "CarAge",app, 1000, 2019)
 
-func_ice_plot = function(model, variable, base_app, n_sample = nrow(base_app), seed = 2019, alpha = 0.1, col = "cornflowerblue"){
-  a = func_ice(model, variable, base_app, n_sample, 2019)
-  a%>%ggplot(aes_string(x = variable, y = "yhat", group = "yhat.id" ))+geom_line(alpha = alpha, col = col)
-}
-func_ice_plot(xgb_freq_num, "CarAge",app, 1000, 2019, 0.4)
+# Comparaison
+variable = "Region"
+# Variable purement catégorielle (Region, Area (si on ne la transforme pas en num.), Gas, Brand)
+app%>%group_by_(variable)%>%summarise(gg = sum(ClaimNb)/sum(Exposure))%>%ggplot(aes_string(x = "Region", y = "gg"))+geom_col()
+app%>%group_by_("Brand")%>%summarise(gg = sum(ClaimNb)/sum(Exposure))%>%ggplot(aes_string(x = "Brand", y = "gg"))+geom_col()
+app%>%group_by_("Area")%>%summarise(gg = sum(ClaimNb)/sum(Exposure))%>%ggplot(aes_string(x = "Area", y = "gg"))+geom_col()
+
+# Variable catégorielle ordonnée
+variable = "VehPower"
+freq%>%group_by_(variable)%>%summarise(gg = sum(ClaimNb)/sum(Exposure))%>%ggplot(aes_string(x = variable, y = "gg"))+geom_col()
+
 
 # Avec iml ----
 
 # 3) Analyse interactions : ICE, H-stat, PDP 2 var, PDP par groupe
+# a) H STAT -----
 # avec iml
 #temps estimé pour n_sample = 1 000 (et grid.size =20 par défaut) pour une variable (CarAge): environ 10 secondes)
 # ça devient vite très long en temps de calcul
@@ -403,4 +409,72 @@ H_stat_all = Interaction$new(mod)
 # On observe des H-stat > 1 : à cause des variables catégorielles (comme on l'avait noté dans le mémoire)
 # Alors que ça devrait être entre 0 et 1
 
-# 4) Lime, Shap, Breakdown, Live
+# b) Courbes ICES : choisir les courbes les plus pertinentes ------
+# Courbes pas translatées entre elles ==> interaction
+ICE_courbes_freMTPL2(10, xgb_freq_num, which(var_freq=="Gas"), dat_app = app)
+ICE_courbes_freMTPL2(100, xgb_freq_num, which(var_freq=="CarAge"), dat_app = app)+xlim(c(0,20))
+ICE_courbes_freMTPL2(100, xgb_freq_num, which(var_freq=="Power"), dat_app = app)
+
+# ICE : courbes pas translatées entre elles ==> interaction
+func_ice = function(model, variable, base_app, n_sample = nrow(base_app), seed = 2019){
+  set.seed(seed)
+  app_sample = base_app[sample(1:nrow(base_app),n_sample),]
+  model %>% partial(pred.var = variable, train  = app_sample, 
+                    pred.fun = function(object, newdata){predict(object,newdata)*newdata$Exposure}) 
+}
+# ex
+func_ice(xgb_freq_num, "CarAge",app, 1000, 2019)
+
+func_ice_plot = function(model, variable, base_app, n_sample = nrow(base_app), seed = 2019, alpha = 0.1, col = "cornflowerblue"){
+  a = func_ice(model, variable, base_app, n_sample, 2019)
+  a%>%ggplot(aes_string(x = variable, y = "yhat", group = "yhat.id" ))+geom_line(alpha = alpha, col = col)
+}
+func_ice_plot(xgb_freq_num, "CarAge",app, 1000, 2019, 0.4)
+
+
+# 4) Lime, Shap, Breakdown, Live------
+
+#a) LIME
+# avec package lime
+# Sur exemple particulier (1 ere observation)
+lime_func(xgb_freq_num, dat_app= app, 1, 5000, n_features = 4)
+lime_plot(xgb_freq_num, dat_app= app, 1, 5000, n_features = 4)
+# On peut analyser un des extremats : et comparer GLM et XGBoost
+# max : très bizarre : l'analyse de LIME tend plutôt à dire que la valeur prédite devrat être faible
+# BONUS MALUS semble fair ebaisser le risque de sinistres
+app[which.max(app$fit_xgb_num),]
+lime_plot(xgb_freq_num, dat_app= app, which.max(app$fit_xgb_num), 20000, n_features = 8)
+
+# autre exemple : plus cohérent indice 230339 dans la table app (PolicyID = 2127799)
+set.seed(2019)
+obs = app[app$fit_glm_num>quantile(app$fit_glm_num,0.99),]%>%sample_n(1)
+lime_plot(xgb_freq_num, dat_app= app, which(app$PolicyID==obs$PolicyID), 5000, n_features = 4)
+
+# min : cohérent (tout est en rouge quasiment)
+lime_plot(xgb_freq_num, dat_app= app, which.min(app$fit_xgb_num), 20000, n_features = 7)
+
+#Analyse de la stabilité des résulats fournis (plusieurs simulations et boxplot)
+lime_stabilite_2(xgb_freq_num, dat_app= app, 1, 5000, n_features = 4, Nsimu = 20)
+# LIME doone des résultats très stables
+#~On pourrait analyser choix du noyau ou de la distance (gower ou autre)
+
+# avec package iml 
+#(qui utilise une variante  qui 
+# utilise les données d'apprentissage pas des données simulées via Loi normale comme LIME)
+# intéressant de les comparer
+lime_iml_func(xgb_freq_num, app, , 1)
+lime_iml_plot(xgb_freq_num, app, , 1)
+
+
+# b) SHAP : plus long !!
+shap_iml_func(xgb_freq_num, app, , 1)
+shap_iml_plot(xgb_freq_num, app, , 1, sample_size = 100)
+# Analyse stablité
+shap_iml_stabilite(xgb_freq_num, app, , 1, sample_size = 100, Nsimu = 10)
+
+# A tester avec le package shappe (qui utilise DALEX : fonction individual_variable_effect)
+
+# C) breakdown
+breakdown_func(xgb_freq_num, app, , x_interest = 1, direction = "up")
+breakdown_func(xgb_freq_num, app, , x_interest = 1, direction = "down")
+breakdown_plot(xgb_freq_num, app, , x_interest = 1, direction = "down")
